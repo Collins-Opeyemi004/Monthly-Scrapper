@@ -5,16 +5,17 @@ import schedule
 import threading
 from flask import Flask, jsonify
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
 WEBHOOK_URL_MONTHLY = "https://hook.us2.make.com/a6mjvisd3ktkdvtus4t3ggi2egqbru6m"
 
-monthly_leaderboard_data = []
+monthly_leaderboard_data = []  # Stores latest monthly leaderboard data
 
 def scrape_monthly_leaderboard():
     global monthly_leaderboard_data
-    
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -52,7 +53,10 @@ def scrape_monthly_leaderboard():
                     wallet_address = profile_url.split("/account/")[-1] if "/account/" in profile_url else "N/A"
 
                     name_elements = player.query_selector_all("h1")
-                    name = name_elements[0].inner_text().strip() if index == 1 else (name_elements[1].inner_text().strip() if len(name_elements) > 1 else f"Rank {index}")
+                    if index == 1:
+                        name = name_elements[0].inner_text().strip() if len(name_elements) > 0 else f"Rank {index}"
+                    else:
+                        name = name_elements[1].inner_text().strip() if len(name_elements) > 1 else f"Rank {index}"
 
                     win_loss = player.query_selector_all(".remove-mobile")
                     wins, losses = win_loss[1].inner_text().split("/") if len(win_loss) > 1 else ("0", "0")
@@ -61,6 +65,32 @@ def scrape_monthly_leaderboard():
                     sol_number = sol_profit_element.query_selector_all("h1")[0].inner_text().strip()
                     dollar_value = sol_profit_element.query_selector_all("h1")[1].inner_text().strip()
 
+                    # --- Step 7: Extract the Twitter/X URL by clicking the icon ---
+                    x_profile_url = "N/A"
+                    try:
+                        icon = player.query_selector("img[src*='Twitter.webp'], img[src*='twitter.png']")
+                        if icon:
+                            try:
+                                with page.expect_popup(timeout=3000) as popup_info:
+                                    icon.click(force=True)
+                                popup_page = popup_info.value
+                                x_url = popup_page.url
+                                popup_page.close()
+                                if "twitter.com" in x_url or "x.com" in x_url:
+                                    x_profile_url = x_url
+                            except Exception:
+                                try:
+                                    with page.expect_navigation(timeout=3000):
+                                        icon.click(force=True)
+                                    new_url = page.url
+                                    if "twitter.com" in new_url or "x.com" in new_url:
+                                        x_profile_url = new_url
+                                        page.go_back()
+                                except Exception:
+                                    x_profile_url = "N/A"
+                    except Exception as e:
+                        print(f"❌ Error extracting X profile for rank {index}: {e}")
+                    
                     leaderboard.append({
                         "rank": index,
                         "profile_icon": profile_img,
@@ -70,7 +100,8 @@ def scrape_monthly_leaderboard():
                         "wins": wins.strip(),
                         "losses": losses.strip(),
                         "sol_number": sol_number.strip(),
-                        "dollar_value": dollar_value.strip()
+                        "dollar_value": dollar_value.strip(),
+                        "x_profile_url": x_profile_url
                     })
                 except Exception as e:
                     print(f"❌ Error extracting Monthly data for rank {index}: {e}")
@@ -108,4 +139,5 @@ def manual_scrape_monthly():
     return jsonify({"message": "Monthly scraping triggered!", "data": monthly_leaderboard_data})
 
 if __name__ == "__main__":
+    # Changed port to 5000
     app.run(host="0.0.0.0", port=5002, debug=True)
